@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plataforma Ortomosaico + Fotos 360°</title>
+  
+  <!-- Estilos de Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Estilos de Pannellum -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"/>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { display: flex; height: 100vh; font-family: system-ui, -apple-system, sans-serif; background: #111; color: #fff; }
+    
+    #mapa { width: 60%; height: 100vh; position: relative; }
+    #panel-360 { width: 40%; height: 100vh; display: flex; flex-direction: column; background: #1a1a1a; border-left: 2px solid #333; }
+    
+    #visor-header { padding: 15px 20px; background: #222; border-bottom: 1px solid #333; }
+    #visor-header h2 { font-size: 1.1rem; font-weight: 600; color: #ececec; }
+    
+    #visor-container { flex: 1; position: relative; }
+    #visor-360 { width: 100%; height: 100%; }
+    
+    .placeholder-text {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: #888;
+      font-size: 0.95rem;
+      padding: 20px;
+    }
+
+    /* Widget de Opacidad */
+    .opacity-control {
+      background: rgba(30, 30, 30, 0.9);
+      padding: 10px 14px;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 0.85rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .opacity-control input[type=range] {
+      width: 130px;
+      cursor: pointer;
+      accent-color: #3b82f6;
+    }
+
+    /* Panel de Medición */
+    .medicion-control {
+      background: rgba(30, 30, 30, 0.9);
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      gap: 8px;
+    }
+    .btn-medicion {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-medicion.activo { background: #dc2626; }
+    .btn-medicion:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+
+  <!-- Panel Izquierdo: Mapa -->
+  <div id="mapa"></div>
+
+  <!-- Panel Derecho: Visor 360 -->
+  <div id="panel-360">
+    <div id="visor-header">
+      <h2 id="titulo-foto">Selecciona un punto en el mapa</h2>
+    </div>
+    <div id="visor-container">
+      <div id="placeholder" class="placeholder-text">
+        Haz clic sobre cualquier punto rojo en el mapa para desplegar la foto 360°.
+      </div>
+      <div id="visor-360"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+  <script>
+    // 1. Capa Google Satelital
+    const googleSatelital = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+      maxZoom: 22,
+      maxNativeZoom: 20,
+      attribution: '&copy; Google Maps'
+    });
+
+    // 2. Capa Ortomosaico XYZ
+    const capaOrtomosaico = L.tileLayer('ortomosaico_tiles/{z}/{x}/{y}.png', {
+      maxZoom: 22,
+      minZoom: 12,
+      tms: true,
+      opacity: 0.9,
+      attribution: 'Ortomosaico 2D'
+    });
+
+    // 3. Inicialización del Mapa centrada en tus coordenadas (-48.7422, -71.2784)
+    const map = L.map('mapa', {
+      center: [-48.74228, -71.27846],
+      zoom: 18,
+      layers: [googleSatelital, capaOrtomosaico]
+    });
+
+    // Crear Pane exclusivo para asegurar la visibilidad de los puntos sobre el ortomosaico
+    map.createPane('puntosPane');
+    map.getPane('puntosPane').style.zIndex = 650;
+
+    // 4. Selector de Capas
+    const selectorCapas = L.control.layers(
+      { "Google Satelital": googleSatelital },
+      { "Ortomosaico 2D": capaOrtomosaico },
+      { position: 'topright' }
+    ).addTo(map);
+
+    // 5. Herramienta de Medición
+    let modoMedicion = false;
+    let puntosMedida = [];
+    let lineaMedida = null;
+    let poligonoMedida = null;
+
+    const controlMedicion = L.control({ position: 'topleft' });
+    controlMedicion.onAdd = function () {
+      const div = L.DomUtil.create('div', 'medicion-control');
+      div.innerHTML = `
+        <button id="btn-toggle-medir" class="btn-medicion">📏 Activar Regla</button>
+        <button id="btn-limpiar-medir" class="btn-medicion" style="background:#4b5563;">Borrar</button>
+      `;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    };
+    controlMedicion.addTo(map);
+
+    document.getElementById('btn-toggle-medir').addEventListener('click', function () {
+      modoMedicion = !modoMedicion;
+      if (modoMedicion) {
+        this.classList.add('activo');
+        this.innerText = '❌ Cancelar Medición';
+        map.dragging.disable();
+        map.getContainer().style.cursor = 'crosshair';
+      } else {
+        finalizarMedicion();
+      }
+    });
+
+    document.getElementById('btn-limpiar-medir').addEventListener('click', limpiarMediciones);
+
+    map.on('click', function (e) {
+      if (!modoMedicion) return;
+
+      puntosMedida.push(e.latlng);
+
+      if (lineaMedida) map.removeLayer(lineaMedida);
+      if (poligonoMedida) map.removeLayer(poligonoMedida);
+
+      if (puntosMedida.length >= 2) {
+        lineaMedida = L.polyline(puntosMedida, { color: '#3b82f6', weight: 3 }).addTo(map);
+        
+        let distanciaTotal = 0;
+        for (let i = 0; i < puntosMedida.length - 1; i++) {
+          distanciaTotal += puntosMedida[i].distanceTo(puntosMedida[i + 1]);
+        }
+
+        let textoPopup = `<b>Distancia:</b> ${distanciaTotal.toFixed(2)} m`;
+
+        if (puntosMedida.length >= 3) {
+          poligonoMedida = L.polygon(puntosMedida, { color: '#10b981', fillColor: '#10b981', fillOpacity: 0.3 }).addTo(map);
+          const area = calcularAreaPoligono(puntosMedida);
+          textoPopup += `<br><b>Superficie:</b> ${area.toFixed(2)} m²`;
+        }
+
+        L.popup()
+          .setLatLng(e.latlng)
+          .setContent(textoPopup)
+          .openOn(map);
+      }
+    });
+
+    function finalizarMedicion() {
+      modoMedicion = false;
+      const btn = document.getElementById('btn-toggle-medir');
+      btn.classList.remove('activo');
+      btn.innerText = '📏 Activar Regla';
+      map.dragging.enable();
+      map.getContainer().style.cursor = '';
+    }
+
+    function limpiarMediciones() {
+      puntosMedida = [];
+      if (lineaMedida) map.removeLayer(lineaMedida);
+      if (poligonoMedida) map.removeLayer(poligonoMedida);
+      map.closePopup();
+      finalizarMedicion();
+    }
+
+    function calcularAreaPoligono(latlngs) {
+      if (latlngs.length < 3) return 0;
+      let area = 0;
+      const R = 6378137;
+      for (let i = 0; i < latlngs.length; i++) {
+        const p1 = latlngs[i];
+        const p2 = latlngs[(i + 1) % latlngs.length];
+        area += (p2.lng - p1.lng) * (Math.PI / 180) * (2 + Math.sin(p1.lat * Math.PI / 180) + Math.sin(p2.lat * Math.PI / 180));
+      }
+      return Math.abs(area * R * R / 2);
+    }
+
+    // 6. Slider de Opacidad
+    const opacityControl = L.control({ position: 'bottomleft' });
+    opacityControl.onAdd = function () {
+      const div = L.DomUtil.create('div', 'opacity-control');
+      div.innerHTML = `
+        <label>Opacidad: <span id="val-opacidad">90%</span></label>
+        <input id="range-opacidad" type="range" min="0" max="1" step="0.05" value="0.9">
+      `;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    };
+    opacityControl.addTo(map);
+
+    document.addEventListener('input', function (e) {
+      if (e.target && e.target.id === 'range-opacidad') {
+        const val = e.target.value;
+        capaOrtomosaico.setOpacity(val);
+        document.getElementById('val-opacidad').innerText = Math.round(val * 100) + '%';
+      }
+    });
+
+    let visorPannellum = null;
+
+    // 7. CARGA DE PUNTOS LEYENDO DIRECTAMENTE LA MATRIZ DE FEATURES
+    fetch('puntos/puntos.json')
+      .then(res => {
+        if (!res.ok) throw new Error("No se encontró el archivo 'puntos/puntos.json'");
+        return res.json();
+      })
+      .then(dataGeoJSON => {
+        
+        // Extraer la lista de puntos del GeoJSON
+        const elementos = dataGeoJSON.features || [];
+        console.log("Cargando puntos encontrados:", elementos.length);
+
+        const grupoPuntos = L.featureGroup();
+
+        elementos.forEach(feat => {
+          if (!feat.geometry || !feat.geometry.coordinates) return;
+
+          // GeoJSON almacena coordenadas como [Longitud, Latitud]
+          const lng = feat.geometry.coordinates[0];
+          const lat = feat.geometry.coordinates[1];
+          const props = feat.properties || {};
+
+          // Crear un marcador circular en cada punto
+          const marcador = L.circleMarker([lat, lng], {
+            pane: 'puntosPane',
+            radius: 8,
+            fillColor: '#ef4444', // Rojo por defecto
+            color: '#ffffff',
+            weight: 2,
+            opacity: 1,
+            fillOpacity: 0.95
+          });
+
+          if (props.titulo) {
+            marcador.bindTooltip(props.titulo, { permanent: false, direction: 'top' });
+          }
+
+          // Evento al hacer clic en un punto
+          marcador.on('click', function () {
+            if (modoMedicion) return;
+
+            // Marcar el punto como visitado cambiándolo a color verde
+            marcador.setStyle({ fillColor: '#10b981' });
+
+            document.getElementById('titulo-foto').innerText = props.titulo || "Panorámica 360°";
+            document.getElementById('placeholder').style.display = 'none';
+
+            if (visorPannellum) {
+              try { visorPannellum.destroy(); } catch (err) {}
+            }
+
+            let rutaFoto = props.url_360 || props.foto || "";
+            if (rutaFoto.startsWith('./')) {
+              rutaFoto = rutaFoto.substring(2);
+            }
+
+            visorPannellum = pannellum.viewer('visor-360', {
+              "type": "equirectangular",
+              "panorama": rutaFoto,
+              "autoLoad": true,
+              "compass": false,
+              "showZoomCtrl": true
+            });
+          });
+
+          marcador.addTo(grupoPuntos);
+        });
+
+        // Añadir el grupo de puntos al mapa
+        grupoPuntos.addTo(map);
+        selectorCapas.addOverlay(grupoPuntos, "Puntos 360°");
+
+        // Centrar y reencuadrar el mapa automáticamente sobre la extensión real de los puntos
+        if (grupoPuntos.getBounds().isValid()) {
+          map.fitBounds(grupoPuntos.getBounds(), { padding: [50, 50] });
+        }
+      })
+      .catch(err => console.error("Error al cargar los puntos GeoJSON:", err));
+  </script>
+
+</body>
+</html>
