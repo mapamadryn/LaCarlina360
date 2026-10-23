@@ -100,14 +100,14 @@
   <script>
     // 1. Capa Google Satelital
     const googleSatelital = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-      maxZoom: 22,
+      maxZoom: 21,
       maxNativeZoom: 20,
       attribution: '&copy; Google Maps'
     });
 
     // 2. Capa Ortomosaico XYZ
     const capaOrtomosaico = L.tileLayer('ortomosaico_tiles/{z}/{x}/{y}.png', {
-      maxZoom: 22,
+      maxZoom: 21,
       minZoom: 12,
       tms: true,
       opacity: 0.9,
